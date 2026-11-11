@@ -149,11 +149,58 @@ services:
       - ${getEnvPath()}
     volumes:
       - ${config.paths.voiceApp}/audio:/app/audio
-      - ${config.paths.voiceApp}/config:/app/config
+      - ${config.paths.voiceApp}/config:/app/config${googleCredentialsVolume(config)}
     depends_on:
       - drachtio
       - freeswitch
 `;
+}
+
+/**
+ * Extra volume line mounting the Vertex service account JSON (read-only)
+ * @param {object} config
+ * @returns {string}
+ */
+function googleCredentialsVolume(config) {
+  if (!isGeminiEngine(config) || config.api.gemini.auth !== 'vertex' || !config.api.gemini.credentialsPath) return '';
+  return `\n      - ${config.api.gemini.credentialsPath}:${GOOGLE_CREDENTIALS_CONTAINER_PATH}:ro`;
+}
+
+/** Path inside the voice-app container for the Vertex service account file */
+export const GOOGLE_CREDENTIALS_CONTAINER_PATH = '/app/google-credentials.json';
+
+function isGeminiEngine(config) {
+  return config.api && config.api.voiceEngine === 'gemini-live' && config.api.gemini;
+}
+
+/**
+ * .env lines for Gemini Live
+ * @param {object} config
+ * @returns {string[]}
+ */
+function geminiEnvLines(config) {
+  if (!isGeminiEngine(config)) {
+    return ['# Voice engine', 'VOICE_ENGINE=classic', ''];
+  }
+  const g = config.api.gemini;
+  const lines = ['# Voice engine: Gemini Live (Claude Code is used as a tool)', 'VOICE_ENGINE=gemini-live'];
+  if (g.auth === 'vertex') {
+    lines.push(
+      `GOOGLE_CLOUD_PROJECT=${g.project}`,
+      `GOOGLE_CLOUD_LOCATION=${g.location || 'us-central1'}`,
+      `GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_CREDENTIALS_CONTAINER_PATH}`
+    );
+  } else {
+    lines.push(`GEMINI_API_KEY=${g.apiKey}`);
+  }
+  lines.push(
+    `GEMINI_LIVE_MODEL=${g.model || 'gemini-3.8-live'}`,
+    `GEMINI_VOICE=${g.voice || 'Kore'}`,
+    // Claude Code tasks can take a while on the phone
+    'CLAUDE_TOOL_TIMEOUT_SEC=180',
+    ''
+  );
+  return lines;
 }
 
 /**
@@ -220,12 +267,13 @@ export function generateEnvFile(config) {
     '# Claude API Server',
     `CLAUDE_API_URL=${claudeApiUrl}`,
     '',
+    ...geminiEnvLines(config),
     '# ElevenLabs TTS',
-    `ELEVENLABS_API_KEY=${config.api.elevenlabs.apiKey}`,
-    `ELEVENLABS_VOICE_ID=${config.devices[0].voiceId}`,
+    `ELEVENLABS_API_KEY=${config.api.elevenlabs?.apiKey || ''}`,
+    `ELEVENLABS_VOICE_ID=${config.devices[0].voiceId || ''}`,
     '',
     '# OpenAI (Whisper STT)',
-    `OPENAI_API_KEY=${config.api.openai.apiKey}`,
+    `OPENAI_API_KEY=${config.api.openai?.apiKey || ''}`,
     '',
     '# Application Settings',
     `HTTP_PORT=${config.server.httpPort}`,

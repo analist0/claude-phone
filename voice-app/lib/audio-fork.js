@@ -211,6 +211,9 @@ class AudioForkSession extends EventEmitter {
 
     this._binaryCount++;
 
+    // Raw audio for streaming consumers (e.g. Gemini Live)
+    this.emit('audio', data);
+
     // Log periodically (every 50 chunks or every 5 seconds)
     const now = Date.now();
     if (this._binaryCount % 50 === 1 || now - this._lastLogTime > 5000) {

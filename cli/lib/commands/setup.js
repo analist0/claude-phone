@@ -695,11 +695,92 @@ function createDefaultConfig() {
 }
 
 /**
+ * Setup Google Gemini Live credentials (AI Studio key or Vertex AI)
+ * @param {object} config - Current config
+ * @returns {Promise<object>} Updated config
+ */
+async function setupGeminiKeys(config) {
+  const existing = config.api.gemini || {};
+  const { auth } = await inquirer.prompt([{
+    type: 'list',
+    name: 'auth',
+    message: 'Google credentials type:',
+    default: existing.auth || 'api-key',
+    choices: [
+      { name: 'Google AI Studio API key (simplest)', value: 'api-key' },
+      { name: 'Vertex AI (Google Cloud project + service account JSON)', value: 'vertex' }
+    ]
+  }]);
+
+  const required = (label) => (input) => (input && input.trim() !== '') ? true : `${label} is required`;
+  let gemini = { auth };
+
+  if (auth === 'api-key') {
+    const { apiKey } = await inquirer.prompt([{
+      type: 'password',
+      name: 'apiKey',
+      message: 'Gemini API key:',
+      default: existing.apiKey,
+      validate: required('API key')
+    }]);
+    gemini.apiKey = apiKey.trim();
+  } else {
+    const answers = await inquirer.prompt([
+      { type: 'input', name: 'project', message: 'Google Cloud project ID:', default: existing.project, validate: required('Project ID') },
+      { type: 'input', name: 'location', message: 'Vertex AI location:', default: existing.location || 'us-central1' },
+      {
+        type: 'input',
+        name: 'credentialsPath',
+        message: 'Path to service account JSON file:',
+        default: existing.credentialsPath,
+        validate: (input) => {
+          if (!input || !fs.existsSync(input.trim())) return 'File not found';
+          return true;
+        }
+      }
+    ]);
+    gemini = {
+      auth,
+      project: answers.project.trim(),
+      location: answers.location.trim(),
+      credentialsPath: path.resolve(answers.credentialsPath.trim())
+    };
+  }
+
+  const more = await inquirer.prompt([
+    { type: 'input', name: 'model', message: 'Gemini Live model:', default: existing.model || 'gemini-3.8-live' },
+    { type: 'input', name: 'voice', message: 'Gemini voice name:', default: existing.voice || 'Kore' }
+  ]);
+  gemini.model = more.model.trim();
+  gemini.voice = more.voice.trim();
+
+  config.api.gemini = gemini;
+  console.log(chalk.green('✓ Gemini Live configured (' + (auth === 'api-key' ? 'AI Studio key' : 'Vertex AI') + ')'));
+  return config;
+}
+
+/**
  * Setup API keys with validation
  * @param {object} config - Current config
  * @returns {Promise<object>} Updated config
  */
 async function setupAPIKeys(config) {
+  const { engine } = await inquirer.prompt([{
+    type: 'list',
+    name: 'engine',
+    message: 'Voice engine:',
+    default: config.api.voiceEngine || 'gemini-live',
+    choices: [
+      { name: 'Gemini Live (Google) - real-time speech, Hebrew, Claude Code as a tool', value: 'gemini-live' },
+      { name: 'Classic - OpenAI Whisper + ElevenLabs', value: 'classic' }
+    ]
+  }]);
+  config.api.voiceEngine = engine;
+
+  if (engine === 'gemini-live') {
+    return setupGeminiKeys(config);
+  }
+
   // ElevenLabs API Key
   const elevenLabsAnswers = await inquirer.prompt([
     {
@@ -973,6 +1054,7 @@ async function setupDevice(config) {
       name: 'voiceId',
       message: 'ElevenLabs voice ID:',
       default: existingDevice?.voiceId || config.api.elevenlabs.defaultVoiceId || '',
+      when: () => config.api.voiceEngine !== 'gemini-live',
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'Voice ID is required';
@@ -994,11 +1076,16 @@ async function setupDevice(config) {
     }
   ]);
 
-  // Validate voice ID with ElevenLabs API
-  const voiceSpinner = ora('Validating ElevenLabs voice ID...').start();
-  const voiceValidation = await validateVoiceId(config.api.elevenlabs.apiKey, answers.voiceId);
+  // Validate voice ID with ElevenLabs API (classic engine only)
+  const usesElevenLabs = config.api.voiceEngine !== 'gemini-live';
+  const voiceSpinner = usesElevenLabs ? ora('Validating ElevenLabs voice ID...').start() : null;
+  const voiceValidation = usesElevenLabs
+    ? await validateVoiceId(config.api.elevenlabs.apiKey, answers.voiceId)
+    : { valid: true, skipped: true };
 
-  if (!voiceValidation.valid) {
+  if (voiceValidation.skipped) {
+    answers.voiceId = existingDevice?.voiceId || '';
+  } else if (!voiceValidation.valid) {
     voiceSpinner.fail(`Voice ID validation failed: ${voiceValidation.error}`);
     console.log(chalk.yellow('\n⚠️  You can continue setup, but the voice ID may not work.'));
     const { continueAnyway } = await inquirer.prompt([

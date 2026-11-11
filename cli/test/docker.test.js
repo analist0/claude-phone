@@ -280,3 +280,48 @@ test('docker compose generation', async (t) => {
       'voice-server mode should NOT use localhost when apiServerIp is set');
   });
 });
+
+test('Gemini Live voice engine', async (t) => {
+  const base = () => ({
+    server: { externalIp: '10.0.0.5', claudeApiPort: 3333, httpPort: 3000 },
+    sip: { domain: 'pbx.local', registrar: '10.0.0.1' },
+    devices: [{ name: 'Claude', extension: '9000', authId: 'a', password: 'p', voiceId: '' }],
+    secrets: { drachtio: 'd', freeswitch: 'f' },
+    paths: { voiceApp: '/opt/claude-phone/voice-app' }
+  });
+
+  await t.test('writes AI Studio key and skips ElevenLabs/OpenAI', () => {
+    const config = base();
+    config.api = { voiceEngine: 'gemini-live', gemini: { auth: 'api-key', apiKey: 'g-key', model: 'gemini-3.8-live', voice: 'Kore' } };
+    const env = generateEnvFile(config);
+    assert.ok(env.includes('VOICE_ENGINE=gemini-live'));
+    assert.ok(env.includes('GEMINI_API_KEY=g-key'));
+    assert.ok(env.includes('GEMINI_LIVE_MODEL=gemini-3.8-live'));
+    assert.ok(env.includes('ELEVENLABS_API_KEY=\n'));
+    assert.ok(!env.includes('GOOGLE_CLOUD_PROJECT'));
+  });
+
+  await t.test('writes Vertex settings and mounts credentials file', () => {
+    const config = base();
+    config.api = {
+      voiceEngine: 'gemini-live',
+      gemini: { auth: 'vertex', project: 'my-proj', location: 'europe-west4', credentialsPath: '/home/u/sa.json' }
+    };
+    const env = generateEnvFile(config);
+    assert.ok(env.includes('GOOGLE_CLOUD_PROJECT=my-proj'));
+    assert.ok(env.includes('GOOGLE_CLOUD_LOCATION=europe-west4'));
+    assert.ok(env.includes('GOOGLE_APPLICATION_CREDENTIALS=/app/google-credentials.json'));
+    assert.ok(!env.includes('GEMINI_API_KEY'));
+    const compose = generateDockerCompose(config);
+    assert.ok(compose.includes('- /home/u/sa.json:/app/google-credentials.json:ro'));
+  });
+
+  await t.test('classic config is unchanged apart from VOICE_ENGINE', () => {
+    const config = base();
+    config.api = { elevenlabs: { apiKey: 'e' }, openai: { apiKey: 'o' } };
+    const env = generateEnvFile(config);
+    assert.ok(env.includes('VOICE_ENGINE=classic'));
+    assert.ok(env.includes('ELEVENLABS_API_KEY=e'));
+    assert.ok(!generateDockerCompose(config).includes('google-credentials'));
+  });
+});
