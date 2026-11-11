@@ -1,5 +1,7 @@
 import { spawn, execSync } from 'child_process';
 import crypto from 'crypto';
+import path from 'path';
+import { isLocalPbx, writeAsteriskConfig, generateAsteriskService, LOCAL_PBX_SIP_PORT } from './local-pbx.js';
 import fs from 'fs';
 import {
   getDockerComposePath,
@@ -149,11 +151,58 @@ services:
       - ${getEnvPath()}
     volumes:
       - ${config.paths.voiceApp}/audio:/app/audio
-      - ${config.paths.voiceApp}/config:/app/config
+      - ${config.paths.voiceApp}/config:/app/config${googleCredentialsVolume(config)}
     depends_on:
       - drachtio
-      - freeswitch
-`;
+      - freeswitch${isLocalPbx(config) ? '\n      - asterisk' : ''}
+${isLocalPbx(config) ? generateAsteriskService(config, path.dirname(config.paths.voiceApp)) : ''}`;
+}
+
+/**
+ * Extra volume line mounting the Vertex service account JSON (read-only)
+ * @param {object} config
+ * @returns {string}
+ */
+function googleCredentialsVolume(config) {
+  if (!isGeminiEngine(config) || config.api.gemini.auth !== 'vertex' || !config.api.gemini.credentialsPath) return '';
+  return `\n      - ${config.api.gemini.credentialsPath}:${GOOGLE_CREDENTIALS_CONTAINER_PATH}:ro`;
+}
+
+/** Path inside the voice-app container for the Vertex service account file */
+export const GOOGLE_CREDENTIALS_CONTAINER_PATH = '/app/google-credentials.json';
+
+function isGeminiEngine(config) {
+  return config.api && config.api.voiceEngine === 'gemini-live' && config.api.gemini;
+}
+
+/**
+ * .env lines for Gemini Live
+ * @param {object} config
+ * @returns {string[]}
+ */
+function geminiEnvLines(config) {
+  if (!isGeminiEngine(config)) {
+    return ['# Voice engine', 'VOICE_ENGINE=classic', ''];
+  }
+  const g = config.api.gemini;
+  const lines = ['# Voice engine: Gemini Live (Claude Code is used as a tool)', 'VOICE_ENGINE=gemini-live'];
+  if (g.auth === 'vertex') {
+    lines.push(
+      `GOOGLE_CLOUD_PROJECT=${g.project}`,
+      `GOOGLE_CLOUD_LOCATION=${g.location || 'us-central1'}`,
+      `GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_CREDENTIALS_CONTAINER_PATH}`
+    );
+  } else {
+    lines.push(`GEMINI_API_KEY=${g.apiKey}`);
+  }
+  lines.push(
+    `GEMINI_LIVE_MODEL=${g.model || 'gemini-3.8-live'}`,
+    `GEMINI_VOICE=${g.voice || 'Kore'}`,
+    // Claude Code tasks can take a while on the phone
+    'CLAUDE_TOOL_TIMEOUT_SEC=180',
+    ''
+  );
+  return lines;
 }
 
 /**
@@ -211,6 +260,11 @@ export function generateEnvFile(config) {
     '# 3CX / SIP Configuration',
     `SIP_DOMAIN=${config.sip.domain}`,
     `SIP_REGISTRAR=${config.sip.registrar}`,
+    ...(isLocalPbx(config) ? [
+      '# Built-in Asterisk PBX (local, open source)',
+      `SIP_REGISTRAR_PORT=${config.sip.localPbx?.sipPort || LOCAL_PBX_SIP_PORT}`,
+      `SIP_TRUNK_HOST=127.0.0.1:${config.sip.localPbx?.sipPort || LOCAL_PBX_SIP_PORT}`
+    ] : []),
     '',
     '# Default extension (primary device)',
     `SIP_EXTENSION=${config.devices[0].extension}`,
@@ -220,12 +274,13 @@ export function generateEnvFile(config) {
     '# Claude API Server',
     `CLAUDE_API_URL=${claudeApiUrl}`,
     '',
+    ...geminiEnvLines(config),
     '# ElevenLabs TTS',
-    `ELEVENLABS_API_KEY=${config.api.elevenlabs.apiKey}`,
-    `ELEVENLABS_VOICE_ID=${config.devices[0].voiceId}`,
+    `ELEVENLABS_API_KEY=${config.api.elevenlabs?.apiKey || ''}`,
+    `ELEVENLABS_VOICE_ID=${config.devices[0].voiceId || ''}`,
     '',
     '# OpenAI (Whisper STT)',
-    `OPENAI_API_KEY=${config.api.openai.apiKey}`,
+    `OPENAI_API_KEY=${config.api.openai?.apiKey || ''}`,
     '',
     '# Application Settings',
     `HTTP_PORT=${config.server.httpPort}`,
@@ -255,6 +310,10 @@ export async function writeDockerConfig(config) {
 
   await fs.promises.writeFile(dockerComposePath, dockerComposeContent, { mode: 0o644 });
   await fs.promises.writeFile(envPath, envContent, { mode: 0o600 });
+
+  if (isLocalPbx(config)) {
+    await writeAsteriskConfig(config);
+  }
 }
 
 /**

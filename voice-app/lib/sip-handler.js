@@ -4,6 +4,8 @@
  */
 
 const { setTimeout: sleep } = require('node:timers/promises');
+const { runGeminiConversation } = require('./gemini-conversation');
+const { useGeminiEngine } = require('./voice-engine');
 
 // Audio cue URLs
 const READY_BEEP_URL = 'http://127.0.0.1:3000/static/ready-beep.wav';
@@ -348,7 +350,16 @@ async function handleInvite(req, res, options) {
       if (endpoint) endpoint.destroy().catch(function() {});
     });
 
-    await conversationLoop(endpoint, dialog, callUuid, options, deviceConfig);
+    if (useGeminiEngine()) {
+      console.log('[' + new Date().toISOString() + '] CALL Engine: Gemini Live');
+      try {
+        await runGeminiConversation(endpoint, dialog, callUuid, Object.assign({}, options, { deviceConfig: deviceConfig }));
+      } finally {
+        try { dialog.destroy(); } catch (e) {}
+      }
+    } else {
+      await conversationLoop(endpoint, dialog, callUuid, options, deviceConfig);
+    }
     return { endpoint: endpoint, dialog: dialog, callerId: callerId, callUuid: callUuid };
 
   } catch (error) {

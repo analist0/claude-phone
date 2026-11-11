@@ -11,6 +11,8 @@ const logger = require('./logger');
 const { OutboundSession, getSession, getAllSessions } = require('./outbound-session');
 const { initiateOutboundCall, playMessage, hangupCall } = require('./outbound-handler');
 const { runConversationLoop } = require('./conversation-loop');
+const { runGeminiConversation } = require('./gemini-conversation');
+const { useGeminiEngine } = require('./voice-engine');
 
 // Dependencies injected via setupRoutes()
 var srf = null;
@@ -229,6 +231,26 @@ router.post('/outbound-call', async function(req, res) {
         session.setDialog(dialog);
         session.setEndpoint(endpoint);
         session.transition('PLAYING');
+
+        if (useGeminiEngine()) {
+          // Gemini Live speaks the message itself (Hebrew), then converses or hangs up
+          session.transition('CONVERSING');
+          try {
+            await runGeminiConversation(endpoint, dialog, callId, {
+              audioForkServer: audioForkServer,
+              claudeBridge: claudeBridge,
+              wsPort: wsPort,
+              deviceConfig: deviceConfig,
+              initialContext: message,
+              announceOnly: mode === 'announce'
+            });
+          } catch (geminiError) {
+            logger.error('Gemini conversation error', { callId: callId, error: geminiError.message });
+          }
+          await hangupCall(dialog, endpoint, callId);
+          session.transition('COMPLETED', mode === 'announce' ? 'announce_complete' : 'conversation_complete');
+          return;
+        }
 
         // Play the initial message with device voice
         var voiceId = (deviceConfig && deviceConfig.voiceId) ? deviceConfig.voiceId : null;

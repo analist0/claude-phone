@@ -24,6 +24,7 @@ import { detect3cxSbc } from '../port-check.js';
 import { checkPiPrerequisites } from '../prerequisites.js';
 import { checkClaudeApiServer } from '../network.js';
 import { runPrereqChecks } from '../prereqs.js';
+import { isLocalPbx, createLocalPbxConfig, generatePbxPassword, LOCAL_PBX_SIP_PORT } from '../local-pbx.js';
 
 /**
  * Prompt for installation type
@@ -229,6 +230,10 @@ async function setupInstallationType(installationType, existingConfig, isPi, opt
 
   // Type-specific success messages
   console.log(chalk.bold.green('\n✓ Setup complete!\n'));
+
+  if (isLocalPbx(config)) {
+    printSoftphoneInstructions(config);
+  }
 
   if (installationType === 'api-server') {
     console.log(chalk.gray('To start the API server:'));
@@ -695,11 +700,92 @@ function createDefaultConfig() {
 }
 
 /**
+ * Setup Google Gemini Live credentials (AI Studio key or Vertex AI)
+ * @param {object} config - Current config
+ * @returns {Promise<object>} Updated config
+ */
+async function setupGeminiKeys(config) {
+  const existing = config.api.gemini || {};
+  const { auth } = await inquirer.prompt([{
+    type: 'list',
+    name: 'auth',
+    message: 'Google credentials type:',
+    default: existing.auth || 'api-key',
+    choices: [
+      { name: 'Google AI Studio API key (simplest)', value: 'api-key' },
+      { name: 'Vertex AI (Google Cloud project + service account JSON)', value: 'vertex' }
+    ]
+  }]);
+
+  const required = (label) => (input) => (input && input.trim() !== '') ? true : `${label} is required`;
+  let gemini = { auth };
+
+  if (auth === 'api-key') {
+    const { apiKey } = await inquirer.prompt([{
+      type: 'password',
+      name: 'apiKey',
+      message: 'Gemini API key:',
+      default: existing.apiKey,
+      validate: required('API key')
+    }]);
+    gemini.apiKey = apiKey.trim();
+  } else {
+    const answers = await inquirer.prompt([
+      { type: 'input', name: 'project', message: 'Google Cloud project ID:', default: existing.project, validate: required('Project ID') },
+      { type: 'input', name: 'location', message: 'Vertex AI location:', default: existing.location || 'us-central1' },
+      {
+        type: 'input',
+        name: 'credentialsPath',
+        message: 'Path to service account JSON file:',
+        default: existing.credentialsPath,
+        validate: (input) => {
+          if (!input || !fs.existsSync(input.trim())) return 'File not found';
+          return true;
+        }
+      }
+    ]);
+    gemini = {
+      auth,
+      project: answers.project.trim(),
+      location: answers.location.trim(),
+      credentialsPath: path.resolve(answers.credentialsPath.trim())
+    };
+  }
+
+  const more = await inquirer.prompt([
+    { type: 'input', name: 'model', message: 'Gemini Live model:', default: existing.model || 'gemini-3.8-live' },
+    { type: 'input', name: 'voice', message: 'Gemini voice name:', default: existing.voice || 'Kore' }
+  ]);
+  gemini.model = more.model.trim();
+  gemini.voice = more.voice.trim();
+
+  config.api.gemini = gemini;
+  console.log(chalk.green('✓ Gemini Live configured (' + (auth === 'api-key' ? 'AI Studio key' : 'Vertex AI') + ')'));
+  return config;
+}
+
+/**
  * Setup API keys with validation
  * @param {object} config - Current config
  * @returns {Promise<object>} Updated config
  */
 async function setupAPIKeys(config) {
+  const { engine } = await inquirer.prompt([{
+    type: 'list',
+    name: 'engine',
+    message: 'Voice engine:',
+    default: config.api.voiceEngine || 'gemini-live',
+    choices: [
+      { name: 'Gemini Live (Google) - real-time speech, Hebrew, Claude Code as a tool', value: 'gemini-live' },
+      { name: 'Classic - OpenAI Whisper + ElevenLabs', value: 'classic' }
+    ]
+  }]);
+  config.api.voiceEngine = engine;
+
+  if (engine === 'gemini-live') {
+    return setupGeminiKeys(config);
+  }
+
   // ElevenLabs API Key
   const elevenLabsAnswers = await inquirer.prompt([
     {
@@ -835,6 +921,27 @@ async function setupAPIKeys(config) {
  * @returns {Promise<object>} Updated config
  */
 async function setupSIP(config) {
+  const { pbx } = await inquirer.prompt([{
+    type: 'list',
+    name: 'pbx',
+    message: 'Phone system (PBX):',
+    default: config.sip.mode === 'local-asterisk' ? 'local-asterisk' : (config.sip.domain ? 'external' : 'local-asterisk'),
+    choices: [
+      { name: 'Built-in Asterisk on this server (open source, call from a softphone app)', value: 'local-asterisk' },
+      { name: 'Existing 3CX / other SIP PBX', value: 'external' }
+    ]
+  }]);
+
+  if (pbx === 'local-asterisk') {
+    config.sip.mode = 'local-asterisk';
+    config.sip.domain = '127.0.0.1';
+    config.sip.registrar = '127.0.0.1';
+    config.sip.localPbx = createLocalPbxConfig(config.sip.localPbx);
+    console.log(chalk.green(`✓ Local Asterisk PBX on UDP port ${config.sip.localPbx.sipPort} (LAN/VPN only)`));
+    return config;
+  }
+
+  config.sip.mode = 'external';
   const answers = await inquirer.prompt([
     {
       type: 'input',
@@ -872,6 +979,23 @@ async function setupSIP(config) {
   config.sip.registrar = answers.registrar;
 
   return config;
+}
+
+/**
+ * Print softphone account details for the built-in PBX
+ * @param {object} config
+ */
+function printSoftphoneInstructions(config) {
+  const host = config.server.externalIp && config.server.externalIp !== 'auto' ? config.server.externalIp : 'YOUR_SERVER_IP';
+  const port = config.sip.localPbx.sipPort || LOCAL_PBX_SIP_PORT;
+  console.log(chalk.bold.cyan('📱 Softphone accounts (Linphone / Zoiper / MicroSIP):\n'));
+  for (const user of config.sip.localPbx.users) {
+    console.log(chalk.white(`  Username: ${user.extension}   Password: ${user.password}`));
+  }
+  console.log(chalk.white(`  Server/Domain: ${host}:${port}   Transport: UDP\n`));
+  console.log(chalk.gray(`  Then dial ${config.devices[0].extension} to talk to ${config.devices[0].name}.`));
+  console.log(chalk.gray('  Passwords are saved in ~/.claude-phone/config.json (sip.localPbx.users)'));
+  console.log(chalk.yellow('  The PBX only accepts private networks (LAN, Tailscale/WireGuard). Do NOT port-forward SIP to the internet.\n'));
 }
 
 /**
@@ -949,6 +1073,7 @@ async function setupDevice(config) {
       name: 'authId',
       message: 'SIP auth ID:',
       default: existingDevice?.authId || '',
+      when: () => !isLocalPbx(config),
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'Auth ID is required';
@@ -961,6 +1086,7 @@ async function setupDevice(config) {
       name: 'password',
       message: 'SIP password:',
       default: existingDevice?.password || '',
+      when: () => !isLocalPbx(config),
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'Password is required';
@@ -973,6 +1099,7 @@ async function setupDevice(config) {
       name: 'voiceId',
       message: 'ElevenLabs voice ID:',
       default: existingDevice?.voiceId || config.api.elevenlabs.defaultVoiceId || '',
+      when: () => config.api.voiceEngine !== 'gemini-live',
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'Voice ID is required';
@@ -994,11 +1121,16 @@ async function setupDevice(config) {
     }
   ]);
 
-  // Validate voice ID with ElevenLabs API
-  const voiceSpinner = ora('Validating ElevenLabs voice ID...').start();
-  const voiceValidation = await validateVoiceId(config.api.elevenlabs.apiKey, answers.voiceId);
+  // Validate voice ID with ElevenLabs API (classic engine only)
+  const usesElevenLabs = config.api.voiceEngine !== 'gemini-live';
+  const voiceSpinner = usesElevenLabs ? ora('Validating ElevenLabs voice ID...').start() : null;
+  const voiceValidation = usesElevenLabs
+    ? await validateVoiceId(config.api.elevenlabs.apiKey, answers.voiceId)
+    : { valid: true, skipped: true };
 
-  if (!voiceValidation.valid) {
+  if (voiceValidation.skipped) {
+    answers.voiceId = existingDevice?.voiceId || '';
+  } else if (!voiceValidation.valid) {
     voiceSpinner.fail(`Voice ID validation failed: ${voiceValidation.error}`);
     console.log(chalk.yellow('\n⚠️  You can continue setup, but the voice ID may not work.'));
     const { continueAnyway } = await inquirer.prompt([
@@ -1017,6 +1149,12 @@ async function setupDevice(config) {
     }
   } else {
     voiceSpinner.succeed(`Voice ID validated: ${voiceValidation.name}`);
+  }
+
+  if (isLocalPbx(config)) {
+    // Credentials are ours to choose: generated, and written into Asterisk's config
+    answers.authId = answers.extension;
+    answers.password = existingDevice?.password || generatePbxPassword();
   }
 
   const device = {

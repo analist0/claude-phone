@@ -4,6 +4,7 @@ import ora from 'ora';
 import { loadConfig, saveConfig, configExists } from '../../config.js';
 import { validateExtension, validateVoiceId } from '../../validators.js';
 import { writeDockerConfig } from '../../docker.js';
+import { isLocalPbx, generatePbxPassword } from '../../local-pbx.js';
 
 /**
  * Device add command - Add a new SIP device
@@ -51,6 +52,9 @@ export async function deviceAddCommand() {
         if (duplicate) {
           return `Extension ${input} is already used by device "${duplicate.name}"`;
         }
+        if (isLocalPbx(config) && (config.sip.localPbx.users || []).some(u => u.extension === input)) {
+          return `Extension ${input} is reserved for a softphone user`;
+        }
         return true;
       }
     },
@@ -58,12 +62,14 @@ export async function deviceAddCommand() {
       type: 'input',
       name: 'authId',
       message: 'SIP auth ID (press Enter to use extension):',
+      when: () => !isLocalPbx(config),
       default: (answers) => answers.extension
     },
     {
       type: 'password',
       name: 'password',
       message: 'SIP password:',
+      when: () => !isLocalPbx(config),
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'Password cannot be empty';
@@ -75,7 +81,8 @@ export async function deviceAddCommand() {
       type: 'input',
       name: 'voiceId',
       message: 'ElevenLabs voice ID:',
-      default: config.api.elevenlabs.defaultVoiceId || '',
+      default: config.api.elevenlabs?.defaultVoiceId || '',
+      when: () => config.api.voiceEngine !== 'gemini-live',
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'Voice ID cannot be empty';
@@ -91,9 +98,18 @@ export async function deviceAddCommand() {
     }
   ]);
 
-  // Validate voice ID with ElevenLabs API
-  const spinner = ora('Validating voice ID with ElevenLabs...').start();
-  const voiceResult = await validateVoiceId(config.api.elevenlabs.apiKey, answers.voiceId);
+  // Validate voice ID with ElevenLabs API (classic engine only)
+  const usesElevenLabs = config.api.voiceEngine !== 'gemini-live';
+  const spinner = ora(usesElevenLabs ? 'Validating voice ID with ElevenLabs...' : 'Preparing device...').start();
+  const voiceResult = usesElevenLabs
+    ? await validateVoiceId(config.api.elevenlabs.apiKey, answers.voiceId)
+    : { valid: true, name: 'Gemini ' + (config.api.gemini?.voice || 'Kore') };
+  if (!usesElevenLabs) answers.voiceId = '';
+
+  if (isLocalPbx(config)) {
+    answers.authId = answers.extension;
+    answers.password = generatePbxPassword();
+  }
 
   if (!voiceResult.valid) {
     spinner.fail(chalk.red(`Voice ID validation failed: ${voiceResult.error}`));
