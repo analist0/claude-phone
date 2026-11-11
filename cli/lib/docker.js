@@ -1,5 +1,7 @@
 import { spawn, execSync } from 'child_process';
 import crypto from 'crypto';
+import path from 'path';
+import { isLocalPbx, writeAsteriskConfig, generateAsteriskService, LOCAL_PBX_SIP_PORT } from './local-pbx.js';
 import fs from 'fs';
 import {
   getDockerComposePath,
@@ -152,8 +154,8 @@ services:
       - ${config.paths.voiceApp}/config:/app/config${googleCredentialsVolume(config)}
     depends_on:
       - drachtio
-      - freeswitch
-`;
+      - freeswitch${isLocalPbx(config) ? '\n      - asterisk' : ''}
+${isLocalPbx(config) ? generateAsteriskService(config, path.dirname(config.paths.voiceApp)) : ''}`;
 }
 
 /**
@@ -258,6 +260,11 @@ export function generateEnvFile(config) {
     '# 3CX / SIP Configuration',
     `SIP_DOMAIN=${config.sip.domain}`,
     `SIP_REGISTRAR=${config.sip.registrar}`,
+    ...(isLocalPbx(config) ? [
+      '# Built-in Asterisk PBX (local, open source)',
+      `SIP_REGISTRAR_PORT=${config.sip.localPbx?.sipPort || LOCAL_PBX_SIP_PORT}`,
+      `SIP_TRUNK_HOST=127.0.0.1:${config.sip.localPbx?.sipPort || LOCAL_PBX_SIP_PORT}`
+    ] : []),
     '',
     '# Default extension (primary device)',
     `SIP_EXTENSION=${config.devices[0].extension}`,
@@ -303,6 +310,10 @@ export async function writeDockerConfig(config) {
 
   await fs.promises.writeFile(dockerComposePath, dockerComposeContent, { mode: 0o644 });
   await fs.promises.writeFile(envPath, envContent, { mode: 0o600 });
+
+  if (isLocalPbx(config)) {
+    await writeAsteriskConfig(config);
+  }
 }
 
 /**

@@ -24,6 +24,7 @@ import { detect3cxSbc } from '../port-check.js';
 import { checkPiPrerequisites } from '../prerequisites.js';
 import { checkClaudeApiServer } from '../network.js';
 import { runPrereqChecks } from '../prereqs.js';
+import { isLocalPbx, createLocalPbxConfig, generatePbxPassword, LOCAL_PBX_SIP_PORT } from '../local-pbx.js';
 
 /**
  * Prompt for installation type
@@ -229,6 +230,10 @@ async function setupInstallationType(installationType, existingConfig, isPi, opt
 
   // Type-specific success messages
   console.log(chalk.bold.green('\n✓ Setup complete!\n'));
+
+  if (isLocalPbx(config)) {
+    printSoftphoneInstructions(config);
+  }
 
   if (installationType === 'api-server') {
     console.log(chalk.gray('To start the API server:'));
@@ -916,6 +921,27 @@ async function setupAPIKeys(config) {
  * @returns {Promise<object>} Updated config
  */
 async function setupSIP(config) {
+  const { pbx } = await inquirer.prompt([{
+    type: 'list',
+    name: 'pbx',
+    message: 'Phone system (PBX):',
+    default: config.sip.mode === 'local-asterisk' ? 'local-asterisk' : (config.sip.domain ? 'external' : 'local-asterisk'),
+    choices: [
+      { name: 'Built-in Asterisk on this server (open source, call from a softphone app)', value: 'local-asterisk' },
+      { name: 'Existing 3CX / other SIP PBX', value: 'external' }
+    ]
+  }]);
+
+  if (pbx === 'local-asterisk') {
+    config.sip.mode = 'local-asterisk';
+    config.sip.domain = '127.0.0.1';
+    config.sip.registrar = '127.0.0.1';
+    config.sip.localPbx = createLocalPbxConfig(config.sip.localPbx);
+    console.log(chalk.green(`✓ Local Asterisk PBX on UDP port ${config.sip.localPbx.sipPort} (LAN/VPN only)`));
+    return config;
+  }
+
+  config.sip.mode = 'external';
   const answers = await inquirer.prompt([
     {
       type: 'input',
@@ -953,6 +979,23 @@ async function setupSIP(config) {
   config.sip.registrar = answers.registrar;
 
   return config;
+}
+
+/**
+ * Print softphone account details for the built-in PBX
+ * @param {object} config
+ */
+function printSoftphoneInstructions(config) {
+  const host = config.server.externalIp && config.server.externalIp !== 'auto' ? config.server.externalIp : 'YOUR_SERVER_IP';
+  const port = config.sip.localPbx.sipPort || LOCAL_PBX_SIP_PORT;
+  console.log(chalk.bold.cyan('📱 Softphone accounts (Linphone / Zoiper / MicroSIP):\n'));
+  for (const user of config.sip.localPbx.users) {
+    console.log(chalk.white(`  Username: ${user.extension}   Password: ${user.password}`));
+  }
+  console.log(chalk.white(`  Server/Domain: ${host}:${port}   Transport: UDP\n`));
+  console.log(chalk.gray(`  Then dial ${config.devices[0].extension} to talk to ${config.devices[0].name}.`));
+  console.log(chalk.gray('  Passwords are saved in ~/.claude-phone/config.json (sip.localPbx.users)'));
+  console.log(chalk.yellow('  The PBX only accepts private networks (LAN, Tailscale/WireGuard). Do NOT port-forward SIP to the internet.\n'));
 }
 
 /**
@@ -1030,6 +1073,7 @@ async function setupDevice(config) {
       name: 'authId',
       message: 'SIP auth ID:',
       default: existingDevice?.authId || '',
+      when: () => !isLocalPbx(config),
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'Auth ID is required';
@@ -1042,6 +1086,7 @@ async function setupDevice(config) {
       name: 'password',
       message: 'SIP password:',
       default: existingDevice?.password || '',
+      when: () => !isLocalPbx(config),
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'Password is required';
@@ -1104,6 +1149,12 @@ async function setupDevice(config) {
     }
   } else {
     voiceSpinner.succeed(`Voice ID validated: ${voiceValidation.name}`);
+  }
+
+  if (isLocalPbx(config)) {
+    // Credentials are ours to choose: generated, and written into Asterisk's config
+    answers.authId = answers.extension;
+    answers.password = existingDevice?.password || generatePbxPassword();
   }
 
   const device = {

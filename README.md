@@ -69,6 +69,8 @@ claude-phone start
 Prefer Google? Pick **Gemini Live** during `claude-phone setup`. Gemini handles the
 real-time voice conversation (Hebrew by default) and calls Claude Code as a tool for real
 work. You only need an AI Studio key or Vertex AI credentials; no ElevenLabs/OpenAI keys.
+No PBX? Choose **Built-in Asterisk** and the setup runs a local open-source PBX in Docker:
+connect a softphone app (e.g. Linphone) and dial the bot extension.
 See [docs/GEMINI-LIVE.md](docs/GEMINI-LIVE.md).
 
 ## Deployment Modes

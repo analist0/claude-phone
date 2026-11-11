@@ -40,13 +40,33 @@ export async function configShowCommand() {
 
   // API Keys
   console.log(chalk.bold('API Keys:'));
-  console.log(chalk.gray(`  OpenAI API Key: ${redactValue(config.apiKeys.openai)}`));
-  console.log(chalk.gray(`  ElevenLabs API Key: ${redactValue(config.apiKeys.elevenlabs)}`));
+  const api = config.api || {};
+  console.log(chalk.gray(`  Voice engine: ${api.voiceEngine || 'classic'}`));
+  if (api.voiceEngine === 'gemini-live' && api.gemini) {
+    if (api.gemini.auth === 'vertex') {
+      console.log(chalk.gray(`  Vertex AI: ${api.gemini.project} (${api.gemini.location})`));
+    } else {
+      console.log(chalk.gray(`  Gemini API Key: ${redactValue(api.gemini.apiKey)}`));
+    }
+    console.log(chalk.gray(`  Gemini model/voice: ${api.gemini.model} / ${api.gemini.voice}`));
+  } else {
+    console.log(chalk.gray(`  OpenAI API Key: ${redactValue(api.openai && api.openai.apiKey)}`));
+    console.log(chalk.gray(`  ElevenLabs API Key: ${redactValue(api.elevenlabs && api.elevenlabs.apiKey)}`));
+  }
 
-  // 3CX Configuration
-  console.log(chalk.bold('\n3CX Configuration:'));
-  console.log(chalk.gray(`  SIP Domain: ${config.sip.domain}`));
-  console.log(chalk.gray(`  SIP Registrar: ${config.sip.registrar}`));
+  // SIP / PBX Configuration
+  if (config.sip.mode === 'local-asterisk' && config.sip.localPbx) {
+    console.log(chalk.bold('\nBuilt-in Asterisk PBX:'));
+    console.log(chalk.gray(`  Server: ${config.server.externalIp}:${config.sip.localPbx.sipPort} (UDP)`));
+    for (const user of config.sip.localPbx.users || []) {
+      console.log(chalk.gray(`  Softphone user ${user.extension}: password ${redactValue(user.password)}`));
+    }
+    console.log(chalk.gray('  Full passwords: ~/.claude-phone/config.json (sip.localPbx.users)'));
+  } else {
+    console.log(chalk.bold('\n3CX Configuration:'));
+    console.log(chalk.gray(`  SIP Domain: ${config.sip.domain}`));
+    console.log(chalk.gray(`  SIP Registrar: ${config.sip.registrar}`));
+  }
 
   // Server Configuration
   console.log(chalk.bold('\nServer:'));

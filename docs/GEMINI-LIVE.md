@@ -19,7 +19,7 @@ Phone ──SIP──▶ PBX ──▶ drachtio + FreeSWITCH ──audio 16kHz�
 | Linux server with Docker | Ubuntu/Debian recommended |
 | Claude Code CLI | Installed and signed in on the server where `claude-api-server` runs |
 | Google credentials | **One of:** an AI Studio API key (simplest), or Vertex AI (project + service account JSON with the *Vertex AI User* role) |
-| SIP PBX or SIP provider | 3CX, FreePBX/Asterisk, or any SIP PBX that has an extension for the bot |
+| PBX | **Built-in:** Asterisk (open source) runs in Docker on the same server, no outside PBX needed. Or use an existing 3CX or SIP PBX |
 
 You do **not** need ElevenLabs or OpenAI keys in this mode.
 
@@ -27,7 +27,7 @@ You do **not** need ElevenLabs or OpenAI keys in this mode.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/theNetworkChuck/claude-phone/main/install.sh | bash
-claude-phone setup     # choose "Gemini Live", then an AI Studio key or Vertex AI
+claude-phone setup     # Gemini Live + Google key, then PBX: Built-in Asterisk
 claude-phone start
 ```
 
@@ -37,6 +37,32 @@ During setup:
 - **Model:** default is `gemini-3.8-live`. **Voice:** default is `Kore`.
 
 To edit the configuration by hand, see the `Voice Engine` section in `.env.example`.
+
+## Built-in PBX (Asterisk, local, open source)
+
+If you choose `Built-in Asterisk` in setup:
+- An `asterisk` container is added that listens on **UDP 5160** with RTP on 10000-10200.
+- The bot extension (default 9000) registers with it automatically, with a generated password.
+- Two softphone users are created, **1001** and **1002**, with strong generated passwords. Setup
+  prints them at the end, and they are saved in `~/.claude-phone/config.json` under
+  `sip.localPbx.users`.
+- Config files are generated into `~/.claude-phone/asterisk/` on every `claude-phone start`.
+
+### Connecting from your phone
+1. Install a free softphone app: **Linphone** (Android/iOS, open source), Zoiper or MicroSIP (Windows).
+2. Add a SIP account:
+   - Username: `1001`
+   - Password: from setup
+   - Domain/server: `SERVER_IP:5160`
+   - Transport: UDP
+3. Dial **9000** and start talking in Hebrew.
+
+### Security (important!)
+The phone controls Claude Code, which can run commands on the server.
+- The PBX **only accepts private networks** (LAN, `100.64.0.0/10` for Tailscale) and blocks everything else.
+- **Do not open/forward port 5160 to the internet.** To call from outside your home, use
+  **Tailscale** or **WireGuard** (both open source / free) and connect the softphone through the VPN.
+- To change the allowed networks, edit `sip.localPbx.allowedNets` in `config.json` and run `claude-phone start`.
 
 ## Settings (.env)
 
